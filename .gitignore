@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 *.csv
+*.joblib
 *.xlsx
 *.pdf
 Example/
