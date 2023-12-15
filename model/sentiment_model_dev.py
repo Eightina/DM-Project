@@ -1,53 +1,145 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sat Apr  1 14:35:51 2023
+@author: Orion
 
-@author: Neal
+Only for local running with CUDA
 """
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.feature_extraction.text import TfidfTransformer
-from sklearn.model_selection import GridSearchCV
-from sklearn.pipeline import Pipeline
-from sklearn.naive_bayes import MultinomialNB
+import numpy as np
 import pandas as pd
-import joblib
-
+from datasets import load_dataset, Dataset, Value, ClassLabel, Features, concatenate_datasets
+import torch
+from transformers import AdamW, AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments
+from imblearn.over_sampling import RandomOverSampler
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from transformers import Trainer
 # #############################################################################
 # Define a pipeline combining a text feature extractor with a simple
-# classifier
-pipeline = Pipeline([
-    ('vect', CountVectorizer()),
-    ('tfidf', TfidfTransformer()),
-    ('clf', MultinomialNB()),
-])
+# model & tokenizer
+from transformers import AutoTokenizer
+checkpoint = "distilroberta-base"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
-# uncommenting more parameters will give better exploring power but will
-# increase processing time in a combinatorial way
-parameters = {
-    'vect__max_df': (0.5, 0.75, 1.0),
-    'vect__ngram_range': ((1, 1), (1, 2), (1, 3)),
-    'tfidf__use_idf': (True, False),
-    'tfidf__norm': ('l1', 'l2'),
-}
+from transformers import DataCollatorWithPadding
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+
+# training_args
+training_args = TrainingArguments("test-trainer",num_train_epochs=3,per_device_train_batch_size=8)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+model.to(device)
+
+def compute_metrics(pred):
+    labels = pred.label_ids
+    preds = pred.predictions.argmax(-1)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average="weighted")
+    acc = accuracy_score(labels, preds)
+    return {
+        "accuracy": acc,
+        "f1": f1,
+        "precision": precision,
+        "recall": recall
+    }
+def tokenize_function(example):
+    return tokenizer(example["text"], truncation=True)
 
 if __name__ == "__main__":
-    # multiprocessing requires the fork to happen in a __main__ protected
-    # block
-
-    # find the best parameters for both the feature extraction and the
-    # classifier
+    #load data
+    traindf = pd.read_excel('./data/Task-2/train.xlsx')
+    testdf=pd.read_excel('./data/Task-2/test.xlsx')
+    #clean data
+    traindf.drop_duplicates(subset='text',inplace=True)
+    traindf.shape,testdf.shape,traindf['label'].value_counts()
+    ros = RandomOverSampler()
+    train_x, train_y = ros.fit_resample(np.array(traindf['text']).reshape(-1, 1), np.array(traindf['label']).reshape(-1, 1))
+    traindf_balance = pd.DataFrame(list(zip([x[0] for x in train_x], train_y)), columns = ['text', 'label'])
+    traindf_balance['label'].value_counts()
     
-    grid_search = GridSearchCV(pipeline, parameters, scoring='f1', n_jobs=-1, verbose=1)
-    # df = pd.read_excel('./data/Task-2/train.xlsx')
-    df = pd.read_excel('/app/model/data/Task-2/train.xlsx')
-    X= df.text
-    grid_search.fit(df.text,df.label)
-    print("Performing grid search...")
-    print("pipeline:", [name for name, _ in pipeline.steps])
-    print("parameters:")
-    print("Best score: %0.3f" % grid_search.best_score_)
-    print("Best parameters set:")
-    best_parameters = grid_search.best_estimator_.get_params()
-    for param_name in sorted(parameters.keys()):
-        print("\t%s: %r" % (param_name, best_parameters[param_name]))
-    joblib.dump(grid_search, "text_sentiment_model_v001.joblib")
+    #data preprocessing
+    #shuffle training dataset
+    traindf=traindf_balance.sample(frac=1)
+    traindf['label'].replace(-1, 0, inplace=True)
+
+    testdf=testdf[['text']]
+
+    testds_features=Features({'text': Value(dtype='string', id = None)})
+    testds=Dataset.from_dict(mapping={"text": testdf['text'].to_list()},features=testds_features)
+
+
+    trainds_features = Features({'text': Value(dtype='string', id = None), 'label': ClassLabel(num_classes=2 ,id=None)})
+    trainds = Dataset.from_dict(mapping={"text": traindf['text'].to_list(), 'label': traindf['label'].to_list()},
+                                features=trainds_features)
+    #whole training dataset
+    trainds_org = trainds.shuffle(seed=42)
+
+
+    #split
+    cv_fold=5
+    slice_ds=[]
+    for i in range(cv_fold):
+        slice_ds.append(trainds_org.shard(num_shards=cv_fold,index=i))
+        
+    #training    
+    tokenized_train_org_datasets=trainds_org.map(tokenize_function, batched=True)
+    tokenized_test_datasets=testds.map(tokenize_function, batched=True)
+    #cross_validation cv_fold=5
+    total_f1_score=0
+    for i in range(cv_fold):
+        valds=slice_ds[i]
+        if i==0:
+            trainds=concatenate_datasets(slice_ds[i+1:cv_fold])
+        elif i==cv_fold-1:
+            trainds=concatenate_datasets(slice_ds[0:i])
+        else:
+            temp=slice_ds[0:i]
+            for j in range(i+1,cv_fold):
+                temp.append(slice_ds[j])
+            trainds=concatenate_datasets(temp)
+
+        tokenized_train_datasets = trainds.map(tokenize_function, batched=True)
+        tokenized_eval_datasets=valds.map(tokenize_function, batched=True)
+
+        trainer = Trainer(
+            model,
+            training_args,
+            train_dataset=tokenized_train_datasets,
+            eval_dataset=tokenized_eval_datasets,
+            data_collator=data_collator,
+            tokenizer=tokenizer,
+            compute_metrics=compute_metrics,
+        )
+
+        trainer.train()
+        val_result=trainer.evaluate()
+        total_f1_score+=val_result['eval_f1']
+    #average f1 score
+    f1_score_cv=total_f1_score/cv_fold
+    print(f1_score_cv)
+    
+    
+    #train on whole training datatest
+    trainer_final = Trainer(
+        model,
+        training_args,
+        train_dataset=tokenized_train_org_datasets,
+        # eval_dataset=tokenized_eval_datasets,
+        data_collator=data_collator,
+        tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
+    )
+    trainer_final.train()
+    #predict on test dataset
+    pred=trainer_final.predict(tokenized_test_datasets)
+    #change logits to probability
+    label_probability=torch.softmax(torch.tensor(pred[0]),1)
+    #get labels
+    labels=label_probability.argmax(axis=1).reshape(-1,1)
+    labels[:5]
+    
+    test_to_submit=pd.read_excel('./data/Task-2/test_to-submit.xlsx')
+    test_to_submit['label']=labels
+    test_to_submit.loc[test_to_submit['label']==0,'label']=-1
+    # test_to_submit
+    test_to_submit.to_excel('./data/Task-2/test_to-submit_answers1.xlsx')
+    # save model
+    trainer_final.save_model('./test-trainer/roberta_model')
