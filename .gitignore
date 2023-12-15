@@ -3,6 +3,7 @@
 *.joblib
 *.xlsx
 *.pdf
+test-trainer/
 Example/
 __pycache__/
 *.py[cod]
