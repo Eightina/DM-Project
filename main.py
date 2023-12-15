@@ -5,27 +5,50 @@ Created on Wed Apr 5 19:12:48 2023
 @author: Neal
 """
 from pydantic import BaseModel
-import model.sentiment_model as clf
-from fastapi import FastAPI
-from joblib import load
 import uvicorn
-        
+from fastapi import FastAPI
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
+
 app = FastAPI(title="MDS5724 Group Project - Task2 - Demo", 
               description="API for Text Sentiment Analysis", version="1.0")
 
 class Payload(BaseModel):
-    news_title: str = ""
+    news_title: str = "Nice Day High Profit"
+    
+class LocalModel:
+    pass
+    
+def pipe_predict(pipe, x):
+    pred_res = pipe(x)
+    if pred_res[0][0]['score'] > pred_res[0][1]['score']:
+        pred_res = pred_res[0][0]
+    else:
+        pred_res = pred_res[0][1]
+    if pred_res['label'] == 'LABEL_0':
+        pred_res['label'] = -1
+    else:
+        pred_res['label'] = 1
+    final_res = "{{“label”:{}, “sentiment”:{}}}".format(
+            pred_res['label'],
+            pred_res['score']
+        )
+    return final_res
 
 @app.on_event('startup')
 def load_model():
-    clf.model = load('model/text_sentiment_model_v001.joblib')
+    LocalModel.tokenizer = AutoTokenizer.from_pretrained("./model/test-trainer/roberta_model")
+    LocalModel.model = AutoModelForSequenceClassification.from_pretrained("./model/test-trainer/roberta_model", )
 
 
 @app.post('/predict')
 async def get_prediction(payload: Payload = None):
     news_title = dict(payload)['news_title']
-    score = clf.model.predict([news_title,]).tolist()[0]
-    return score
+    if len(news_title) > 512:
+        news_title = news_title[:512]
+    # print(news_title)
+    # return news_title
+    pipe = TextClassificationPipeline(model=LocalModel.model, tokenizer=LocalModel.tokenizer, return_all_scores=True)
+    return pipe_predict(pipe, news_title)
 
 if __name__ == '__main__':
     uvicorn.run(app, port=5724, host='0.0.0.0')
