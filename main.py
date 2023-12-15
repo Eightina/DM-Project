@@ -7,7 +7,8 @@ Created on Wed Apr 5 19:12:48 2023
 from pydantic import BaseModel
 import uvicorn
 from fastapi import FastAPI
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline
+from transformers import AutoTokenizer, TextClassificationPipeline
+from optimum.onnxruntime import ORTModelForSequenceClassification
 
 app = FastAPI(title="MDS5724 Group Project - Task2 - Demo", 
               description="API for Text Sentiment Analysis", version="1.0")
@@ -36,8 +37,8 @@ def pipe_predict(pipe, x):
 
 @app.on_event('startup')
 def load_model():
-    LocalModel.tokenizer = AutoTokenizer.from_pretrained("./model/test-trainer/roberta_model")
-    LocalModel.model = AutoModelForSequenceClassification.from_pretrained("./model/test-trainer/roberta_model", )
+    LocalModel.tokenizer = AutoTokenizer.from_pretrained("./model/test-trainer/onnx_disroberta")
+    LocalModel.model = ORTModelForSequenceClassification.from_pretrained("./model/test-trainer/onnx_disroberta", )
 
 
 @app.post('/predict')
