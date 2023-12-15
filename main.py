@@ -2,7 +2,7 @@
 """
 Created on Wed Apr 5 19:12:48 2023
 
-@author: Neal
+@author: Orion
 """
 from pydantic import BaseModel
 import uvicorn

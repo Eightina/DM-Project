@@ -2,7 +2,7 @@
 """
 @author: Orion
 
-Only for local running with CUDA
+Only for local env training with CUDA
 """
 import numpy as np
 import pandas as pd
@@ -16,7 +16,7 @@ from transformers import Trainer
 # Define a pipeline combining a text feature extractor with a simple
 # model & tokenizer
 from transformers import AutoTokenizer
-checkpoint = "distilroberta-base"
+checkpoint = "distilbert-base-uncased"
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
 from transformers import DataCollatorWithPadding
@@ -141,5 +141,27 @@ if __name__ == "__main__":
     test_to_submit.loc[test_to_submit['label']==0,'label']=-1
     # test_to_submit
     test_to_submit.to_excel('./data/Task-2/test_to-submit_answers1.xlsx')
-    # save model
-    trainer_final.save_model('./test-trainer/roberta_model')
+    # save basic model
+    trainer_final.save_model('./test-trainer/disroberta_model')
+    
+    #quantinize
+    from optimum.onnxruntime import ORTModelForSequenceClassification
+    from transformers import AutoTokenizer
+    from optimum.onnxruntime.configuration import AutoQuantizationConfig
+    from optimum.onnxruntime import ORTQuantizer
+
+    model_checkpoint = "./test-trainer/disroberta_model"
+    save_directory = "./test-trainer/onnx_disroberta/"
+    # Load a model from transformers and export it to ONNX
+    ort_model = ORTModelForSequenceClassification.from_pretrained(model_checkpoint, export=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+
+    # Define the quantization methodology
+    qconfig = AutoQuantizationConfig.arm64(is_static=False, per_channel=False)
+    quantizer = ORTQuantizer.from_pretrained(ort_model)
+    # Apply dynamic quantization on the model
+    quantizer.quantize(save_dir=save_directory, quantization_config=qconfig)
+
+    # Save the onnx model and tokenizer
+    # ort_model.save_pretrained(save_directory)
+    tokenizer.save_pretrained(save_directory)
